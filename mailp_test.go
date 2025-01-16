@@ -23,15 +23,33 @@ func Test_mailp(t *testing.T) {
 	A := Assert.New(t)
 	_ = A
 
-	// TODO: start test upstream imap server, port :1233
-	go runTestImapServer()
+	var err error
+
+	go runTestImapServer(":1233")
 	time.Sleep(20 * time.Millisecond)
 
-	// TODO: custom mailp, port :1234
-	go mailp()
+	mailpAddr := "127.0.0.1:1234"
+
+	conf := &MailpConf{}
+	err = conf.Load(`
+imap:
+  addr: ":1234"
+  users:
+    abc:
+      password: 123
+      upstream:
+        addr: 127.0.0.1:1233
+        auth:
+          type: plain
+          username: username
+          password: password
+`)
+	A.NoError(err, "load conf")
+
+	go mailp(conf)
 	time.Sleep(20 * time.Millisecond)
 
-	c, err := client.Dial("127.0.0.1:1234")
+	c, err := client.Dial(mailpAddr)
 
 	A.NoError(err, "client.New")
 
@@ -41,7 +59,6 @@ func Test_mailp(t *testing.T) {
 	A.Contains(caps, "AUTH=PLAIN")
 	A.Contains(caps, "SASL-IR")
 
-	// TODO: config user for mailp
 	err = c.Authenticate(sasl.NewPlainClient("abc", "abc", "1"))
 	A.Error(err, "login bad")
 	err = c.Authenticate(sasl.NewPlainClient("abc", "abc", "123"))
@@ -73,8 +90,8 @@ func Test_mailp(t *testing.T) {
 	// t.Fatal("TBD")
 }
 
-func runTestImapServer() error {
-	l, err := net.Listen("tcp", ":1233")
+func runTestImapServer(addr string) error {
+	l, err := net.Listen("tcp", addr)
 	if err != nil {
 		panic(err)
 	}
@@ -85,8 +102,8 @@ func runTestImapServer() error {
 
 	srv.AllowInsecureAuth = true
 	srv.Debug = imap.NewDebugWriter(
-		newPrefixWriter("< ", os.Stderr),
-		newPrefixWriter("> ", os.Stderr),
+		newPrefixWriter("t< ", os.Stderr),
+		newPrefixWriter("t> ", os.Stderr),
 	)
 
 	return srv.Serve(l)

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"io"
@@ -17,38 +18,38 @@ import (
 	"github.com/emersion/go-sasl"
 )
 
-type MailpConf struct{}
-
 type Mailp struct {
-	conf MailpConf
+	conf *MailpConf
 	d    *net.Dialer
 
 	l   net.Listener
 	cid int64
+	log *log.Logger
 }
 
-func mailp() error {
-	return (&Mailp{
-		conf: MailpConf{},
-	}).Start()
+func mailp(conf *MailpConf) error {
+	mp := &Mailp{conf: conf}
+
+	return mp.Start()
 }
 
-func (m *Mailp) init() error {
-	m.d = &net.Dialer{Timeout: 2 * time.Second}
+func (mp *Mailp) init() error {
+	mp.d = &net.Dialer{Timeout: 2 * time.Second}
+	mp.log = log.New(os.Stderr, "+ ", 0)
 
 	return nil
 }
 
-func (m *Mailp) Start() error {
-	if err := m.init(); err != nil {
+func (mp *Mailp) Start() error {
+	if err := mp.init(); err != nil {
 		return err
 	}
 
-	l, err := net.Listen("tcp", ":1234")
+	l, err := net.Listen("tcp", mp.conf.Imap.Addr)
 	if err != nil {
 		return err
 	}
-	m.l = l
+	mp.l = l
 
 	fmt.Printf("listing on %s\n", l.Addr().String())
 
@@ -58,22 +59,21 @@ func (m *Mailp) Start() error {
 			return err
 		}
 
-		go m.serve(c)
+		go mp.serve(c)
 	}
 }
 
-func (m *Mailp) Stop() error {
-	return m.l.Close()
+func (mp *Mailp) Stop() error {
+	// TODO: wait all conns done, or close them?
+	return mp.l.Close()
 }
 
-var log2 = log.New(os.Stderr, "+ ", 0)
-
-func (m *Mailp) serve(c net.Conn) error {
-	cid := atomic.AddInt64(&m.cid, 1)
-	log2.Printf("conn(%d) %s\n", cid, c.RemoteAddr())
+func (mp *Mailp) serve(c net.Conn) error {
+	cid := atomic.AddInt64(&mp.cid, 1)
+	mp.log.Printf("conn(%d) %s\n", cid, c.RemoteAddr())
 
 	defer func() {
-		log2.Printf("conn(%d) close\n", cid)
+		mp.log.Printf("conn(%d) close\n", cid)
 		c.Close()
 	}()
 
@@ -97,6 +97,8 @@ func (m *Mailp) serve(c net.Conn) error {
 	if err := greeting.WriteTo(c_w); err != nil {
 		return err
 	}
+
+	var connUsername string
 
 	n := 0
 
@@ -157,12 +159,15 @@ handshake:
 			mechanisms := map[string]sasl.Server{
 				sasl.Plain: sasl.NewPlainServer(func(identity, username, password string) error {
 					if identity != "" && identity != username {
-						return errors.New("Identities not supported")
+						return errors.New("identities not supported")
 					}
 
-					if username == "abc" && password == "123" {
-						// set username for connect upstream
-						return nil
+					if user, ok := mp.conf.Imap.Users[username]; ok {
+						if subtle.ConstantTimeCompare([]byte(user.Password), []byte(password)) == 1 {
+							connUsername = username
+							// set username for connect upstream
+							return nil
+						}
 					}
 
 					return fmt.Errorf("bad username or password")
@@ -189,27 +194,29 @@ handshake:
 			break handshake
 
 		default:
-			log2.Printf("todo cmd %s(%s)", cmd.Tag, cmd.Name)
+			mp.log.Printf("todo cmd %s(%s)", cmd.Tag, cmd.Name)
 		}
 
 	}
 
 	// connect upstream
 	err := func() error {
-		addr := "127.0.0.1:1233"
+		// mp.log.Printf("user %s", connUsername)
+		connUpConf := mp.conf.Imap.Users[connUsername].Upstream
 
-		log2.Printf("conn(%d) connect upstream: %s", cid, addr)
+		addr := connUpConf.Addr
 
-		c2, err := m.d.Dial("tcp", addr)
+		mp.log.Printf("conn(%d) connect upstream: %s", cid, addr)
+
+		c2, err := mp.d.Dial("tcp", addr)
 		if err != nil {
 			return err
 		}
+		// TODO: tls (c3 is for tls)
 		c3 := c2
 		defer c3.Close()
 
-		log2.Printf("conn(%d) connect upstream: %s (ok)", cid, addr)
-
-		// TODO: imap.Client Execute() like
+		mp.log.Printf("conn(%d) connect upstream: %s (ok)", cid, addr)
 
 		c3_r := imap.NewReader(bufio.NewReader(io.TeeReader(c3, newPrefixWriter("s> ", os.Stderr))))
 		c3_w := imap.NewWriter(bufio.NewWriter(io.MultiWriter(c3, newPrefixWriter("s< ", os.Stderr))))
@@ -220,7 +227,7 @@ handshake:
 				return err
 			}
 
-			// log2.Printf("conn(%d) server got %+v\n", cid, ret)
+			// m.log.Printf("conn(%d) server got %+v\n", cid, ret)
 
 			vv, ok := ret.(*imap.StatusResp)
 			if !ok {
@@ -234,32 +241,35 @@ handshake:
 		}
 
 		// AUTH
-		username := "username"
-		password := "password"
+		if connUpConf.Auth.Type != "plain" {
+			return fmt.Errorf("upstream auth support plain, got %s", connUpConf.Auth.Type)
+		}
+
+		username := connUpConf.Auth.Username
+		password := connUpConf.Auth.Password
+		mp.log.Printf("conn(%d) login upstream as %s", cid, username)
+
 		mech, ir, err := sasl.NewPlainClient(username, username, password).Start()
 		if err != nil {
 			return err
 		}
-
-		log2.Printf("conn(%d) login upstream as %s", cid, username)
-
 		cmdr := &commands.Authenticate{
 			Mechanism:       mech,
 			InitialResponse: ir,
 		}
 		cmd := cmdr.Command()
-		cmd.Tag = "a.1"
+		cmd.Tag = "mailp.1"
 
+		// TODO: we need imap.Client.Execute()
 		if err := cmd.WriteTo(c3_w); err != nil {
 			return err
 		}
-
 		for {
 			ret, err := imap.ReadResp(c3_r)
 			if err != nil {
 				return err
 			}
-			log2.Printf("conn(%d) server auth ret: %+v\n", cid, ret)
+			mp.log.Printf("conn(%d) server auth ret: %+v\n", cid, ret)
 
 			if vv, ok := ret.(*imap.DataResp); ok {
 				name, fields, ok := imap.ParseNamedResp(vv)
@@ -282,7 +292,7 @@ handshake:
 			break
 		}
 
-		log2.Printf("conn(%d) pipe\n", cid)
+		mp.log.Printf("conn(%d) pipe\n", cid)
 
 		// PIPE
 		pipe(c_r, c_w, c3_r, c3_w)

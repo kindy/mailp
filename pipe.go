@@ -59,7 +59,3 @@ func pipe(c1_r io.Reader, c1_w io.Writer, c2_r io.Reader, c2_w io.Writer) {
 		}
 	}
 }
-
-func pipe2(conn1 io.ReadWriter, conn2 io.ReadWriter) {
-	pipe(conn1, conn1, conn2, conn2)
-}
