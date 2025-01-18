@@ -5,12 +5,17 @@ import "gopkg.in/yaml.v3"
 var _ = `
 imap:
   addr: "ip:port"
-  tls: ?
+  tls:
+    enabled: true
+    cert: <path>
+    key: <path>
   users:
     <username>:
       password: ?
       upstream:
         addr: 127.0.0.1:1233
+        tls:
+          enabled: true
         auth:
          type: plain
          username: ?
@@ -28,7 +33,7 @@ func (c *MailpConf) Load(s string) error {
 type ImapConf struct {
 	// server listen
 	Addr  string
-	Tls   string
+	Tls   TlsServerConf
 	Users map[string]ImapUserConf
 }
 type ImapUserConf struct {
@@ -38,10 +43,19 @@ type ImapUserConf struct {
 }
 type ImapUpstreamConf struct {
 	Addr string
+	Tls  TlsClientConf
 	Auth ImapAuthConf
 }
 type ImapAuthConf struct {
 	Type     string
 	Username string
 	Password string
+}
+type TlsServerConf struct {
+	Enabled bool
+	Cert    string
+	Key     string
+}
+type TlsClientConf struct {
+	Enabled bool
 }

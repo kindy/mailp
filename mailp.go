@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"crypto/subtle"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -45,10 +46,26 @@ func (mp *Mailp) Start() error {
 		return err
 	}
 
-	l, err := net.Listen("tcp", mp.conf.Imap.Addr)
-	if err != nil {
-		return err
+	var l net.Listener
+	{
+		var err error
+
+		if mp.conf.Imap.Tls.Enabled {
+			var cert tls.Certificate
+			cert, err = tls.LoadX509KeyPair(mp.conf.Imap.Tls.Cert, mp.conf.Imap.Tls.Key)
+			if err == nil {
+				l, err = tls.Listen("tcp", mp.conf.Imap.Addr, &tls.Config{
+					Certificates: []tls.Certificate{cert},
+				})
+			}
+		} else {
+			l, err = net.Listen("tcp", mp.conf.Imap.Addr)
+		}
+		if err != nil {
+			return err
+		}
 	}
+
 	mp.l = l
 
 	fmt.Printf("listing on %s\n", l.Addr().String())
