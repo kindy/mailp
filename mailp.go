@@ -28,12 +28,6 @@ type Mailp struct {
 	log *log.Logger
 }
 
-func mailp(conf *MailpConf) error {
-	mp := &Mailp{conf: conf}
-
-	return mp.Start()
-}
-
 func (mp *Mailp) init() error {
 	mp.d = &net.Dialer{Timeout: 2 * time.Second}
 	mp.log = log.New(os.Stderr, "+ ", 0)
@@ -53,13 +47,21 @@ func (mp *Mailp) Start() error {
 		if mp.conf.Imap.Tls.Enabled {
 			var cert tls.Certificate
 			cert, err = tls.LoadX509KeyPair(mp.conf.Imap.Tls.Cert, mp.conf.Imap.Tls.Key)
-			if err == nil {
+			if err != nil {
+				err = fmt.Errorf("load imap.tls cert fail: %w", err)
+			} else {
 				l, err = tls.Listen("tcp", mp.conf.Imap.Addr, &tls.Config{
 					Certificates: []tls.Certificate{cert},
 				})
+				if err != nil {
+					err = fmt.Errorf("tls.listen fail: %w", err)
+				}
 			}
 		} else {
 			l, err = net.Listen("tcp", mp.conf.Imap.Addr)
+			if err != nil {
+				err = fmt.Errorf("net.listen fail: %w", err)
+			}
 		}
 		if err != nil {
 			return err

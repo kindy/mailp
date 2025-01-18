@@ -2,24 +2,24 @@ package main
 
 import "gopkg.in/yaml.v3"
 
-var _ = `
+var ConfigSample = `
 imap:
   addr: "ip:port"
   tls:
     enabled: true
-    cert: <path>
-    key: <path>
+    cert: "path"
+    key: "path"
   users:
     <username>:
-      password: ?
+      password: "?"
       upstream:
-        addr: 127.0.0.1:1233
+        addr: "127.0.0.1:1233"
         tls:
           enabled: true
         auth:
          type: plain
-         username: ?
-         password: ?
+         username: "?"
+         password: "?"
 `
 
 type MailpConf struct {
