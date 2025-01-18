@@ -171,6 +171,44 @@ handshake:
 
 			continue handshake
 
+		case "LOGIN":
+			loginCmd := &commands.Login{}
+			loginCmd.Parse(cmd.Arguments)
+
+			err := func() error {
+				username := loginCmd.Username
+				password := loginCmd.Password
+
+				if user, ok := mp.conf.Imap.Users[username]; ok {
+					if subtle.ConstantTimeCompare([]byte(user.Password), []byte(password)) == 1 {
+						connUsername = username
+						// set username for connect upstream
+						return nil
+					}
+				}
+
+				return fmt.Errorf("bad username or password")
+			}()
+
+			if err != nil {
+				(&imap.StatusResp{
+					Tag:  cmd.Tag,
+					Type: imap.StatusRespNo,
+					Info: err.Error(),
+				}).WriteTo(c_w)
+
+				// 鉴权失败，可以给Client多几次机会
+				continue handshake
+			}
+
+			// 鉴权成功，接下来开始跟 upstream 对接
+			(&imap.StatusResp{
+				Tag:  cmd.Tag,
+				Type: imap.StatusRespOk,
+			}).WriteTo(c_w)
+
+			break handshake
+
 		case "AUTHENTICATE":
 			authCmd := &commands.Authenticate{}
 			authCmd.Parse(cmd.Arguments)
@@ -214,6 +252,11 @@ handshake:
 
 		default:
 			mp.log.Printf("todo cmd %s(%s)", cmd.Tag, cmd.Name)
+			(&imap.StatusResp{
+				Tag:  cmd.Tag,
+				Type: imap.StatusRespBad,
+				Info: fmt.Sprintf("unsupport command %s", cmd.Name),
+			}).WriteTo(c_w)
 		}
 
 	}

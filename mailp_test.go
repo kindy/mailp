@@ -63,42 +63,63 @@ imap:
 	}
 	A.NoError(err, "start mp fail")
 
-	c, err := client.Dial(mailpAddr)
-	A.NoError(err, "client.New")
-	defer c.Close()
-
-	caps, err := c.Capability()
-	A.NoError(err, "c.caps()")
-	// caps map[AUTH=PLAIN:true CAPABILITY:true IMAP4rev1:true LITERAL+:true SASL-IR:true]
-	A.Contains(caps, "AUTH=PLAIN")
-	A.Contains(caps, "SASL-IR")
-
-	err = c.Authenticate(sasl.NewPlainClient("abc", "abc", "1"))
-	A.Error(err, "login bad")
-	err = c.Authenticate(sasl.NewPlainClient("abc", "abc", "123"))
-	A.NoError(err, "login")
-
-	caps, err = c.Capability()
-	A.NoError(err, "c.caps() real")
-	// TODO: check real caps from test imap server
-	t.Logf("real caps: %+v", caps)
-
-	done := make(chan interface{})
-	ch := make(chan *imap.MailboxInfo)
-	mboxes := make([]*imap.MailboxInfo, 0, 100)
-	mboxNames := make([]string, 0, 100)
-	go func() {
-		for mbox := range ch {
-			mboxes = append(mboxes, mbox)
-			mboxNames = append(mboxNames, mbox.Name)
+	for _, useLogin := range []bool{true, false} {
+		name := "use_auth_plain"
+		if useLogin {
+			name = "use_login"
 		}
-		done <- nil
-	}()
-	err = c.List("", "*", ch)
-	<-done
-	A.NoError(err, "real list")
 
-	A.Contains(mboxNames, "INBOX")
+		t.Run(name, func(t *testing.T) {
+			A := Assert.New(t)
+
+			c, err := client.Dial(mailpAddr)
+			A.NoError(err, "client.New")
+			defer c.Terminate() // TODO: err?
+
+			caps, err := c.Capability()
+			A.NoError(err, "c.caps()")
+			// caps map[AUTH=PLAIN:true CAPABILITY:true IMAP4rev1:true LITERAL+:true SASL-IR:true]
+			A.Contains(caps, "AUTH=PLAIN")
+			A.Contains(caps, "SASL-IR")
+
+			if useLogin {
+				err = c.Login("abc", "1")
+			} else {
+				err = c.Authenticate(sasl.NewPlainClient("abc", "abc", "1"))
+			}
+			A.Error(err, "login bad")
+
+			if useLogin {
+				err = c.Login("abc", "123")
+			} else {
+				err = c.Authenticate(sasl.NewPlainClient("abc", "abc", "123"))
+			}
+			A.NoError(err, "login")
+
+			caps, err = c.Capability()
+			A.NoError(err, "c.caps() real")
+			// TODO: check real caps from test imap server
+			t.Logf("real caps: %+v", caps)
+
+			done := make(chan interface{})
+			ch := make(chan *imap.MailboxInfo)
+			mboxes := make([]*imap.MailboxInfo, 0, 100)
+			mboxNames := make([]string, 0, 100)
+			go func() {
+				for mbox := range ch {
+					mboxes = append(mboxes, mbox)
+					mboxNames = append(mboxNames, mbox.Name)
+				}
+				done <- nil
+			}()
+			err = c.List("", "*", ch)
+			<-done
+			A.NoError(err, "real list")
+
+			A.Contains(mboxNames, "INBOX")
+		})
+	}
+
 }
 
 func Test_mailpTls(t *testing.T) {

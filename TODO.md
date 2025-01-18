@@ -2,6 +2,6 @@
 
 - [x] tls listen
 - [x] cmd
-- [ ] client login (iOS)
+- [x] client login (iOS)
 - [ ] upstream tls
 - [ ] upstream xoauth2
