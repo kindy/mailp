@@ -38,6 +38,7 @@ func Test_mailp(t *testing.T) {
 	err = conf.Load(`
 imap:
   addr: ":1234"
+  connLog: on
   users:
     abc:
       password: 123
@@ -86,6 +87,7 @@ func Test_mailp_upstreamAuthXoauth2(t *testing.T) {
 	err = conf.Load(`
 imap:
   addr: ":1234"
+  connLog: on
   users:
     abc:
       password: 123
@@ -128,6 +130,7 @@ imap:
     enabled: true
     cert: mailp-test.cert
     key: mailp-test.key
+  connLog: on
   users:
     abc: {}
 `)
@@ -183,6 +186,7 @@ func Test_mailpUpstreamTls(t *testing.T) {
 		err = conf.Load(`
 imap:
   addr: ":1234"
+  connLog: on
   users:
     abc:
       password: 123
@@ -214,6 +218,7 @@ imap:
 		err = conf.Load(`
 imap:
   addr: ":1234"
+  connLog: on
   users:
     abc:
       password: 123
@@ -254,6 +259,11 @@ imap:
 		A.Error(err, "c.caps() real")
 		A.Contains(err.Error(), "imap: connection close", "c.caps() real")
 	})
+}
+
+func Test_mailpConnLog(t *testing.T) {
+	// connLog: handshake
+	t.Skip("TODO")
 }
 
 func testMailpBasic(t *testing.T, addr string, useLogin bool) {

@@ -5,6 +5,7 @@ import "gopkg.in/yaml.v3"
 var ConfigSample = `
 imap:
   addr: "ip:port"
+  connLog: on|off|handshake
   tls:
     enabled: true
     cert: "path"
@@ -36,6 +37,8 @@ type ImapConf struct {
 	Addr  string
 	Tls   TlsServerConf
 	Users map[string]ImapUserConf
+	// on|off|handshake
+	ConnLog string `yaml:"connLog"`
 }
 type ImapUserConf struct {
 	Username string

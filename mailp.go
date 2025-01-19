@@ -96,11 +96,15 @@ func (mp *Mailp) serve(c net.Conn) error {
 		c.Close()
 	}()
 
-	// FIXME: turn off prefix write before pipe
-	// FIXME: only turn on prefix write for debug, contains lots of creds
+	// connLog == on|handshake ? (value) : nil
+	var doLog *atomic.Bool
+	if mp.conf.Imap.ConnLog == "on" || mp.conf.Imap.ConnLog == "handshake" {
+		doLog = &atomic.Bool{}
+		doLog.Store(true)
+	}
 
-	c_r := imap.NewReader(bufio.NewReader(io.TeeReader(c, newPrefixWriter("c> ", os.Stderr))))
-	c_w := imap.NewWriter(bufio.NewWriter(io.MultiWriter(c, newPrefixWriter("c< ", os.Stderr))))
+	c_r := imap.NewReader(bufio.NewReader(newReaderWithMayPrefixWriter(c, "c> ", os.Stderr, doLog)))
+	c_w := imap.NewWriter(bufio.NewWriter(newWriterWithMayPrefixWriter(c, "c< ", os.Stderr, doLog)))
 
 	caps := []string{"CAPABILITY", "IMAP4rev1", "AUTH=PLAIN", "LITERAL+", "SASL-IR"}
 	args := []any{}
@@ -121,7 +125,7 @@ func (mp *Mailp) serve(c net.Conn) error {
 
 	n := 0
 
-handshake:
+handshake_client:
 	for {
 		n += 1
 
@@ -143,7 +147,7 @@ handshake:
 				}).WriteTo(c_w)
 				// TODO: return ??
 
-				continue handshake
+				continue handshake_client
 			}
 			return err
 		}
@@ -157,7 +161,7 @@ handshake:
 			}).WriteTo(c_w)
 			// TODO: return ??
 
-			continue handshake
+			continue handshake_client
 		}
 
 		switch cmd.Name {
@@ -169,7 +173,7 @@ handshake:
 				Type: imap.StatusRespOk,
 			}).WriteTo(c_w)
 
-			continue handshake
+			continue handshake_client
 
 		case "LOGIN":
 			loginCmd := &commands.Login{}
@@ -198,7 +202,7 @@ handshake:
 				}).WriteTo(c_w)
 
 				// 鉴权失败，可以给Client多几次机会
-				continue handshake
+				continue handshake_client
 			}
 
 			// 鉴权成功，接下来开始跟 upstream 对接
@@ -207,7 +211,7 @@ handshake:
 				Type: imap.StatusRespOk,
 			}).WriteTo(c_w)
 
-			break handshake
+			break handshake_client
 
 		case "AUTHENTICATE":
 			authCmd := &commands.Authenticate{}
@@ -239,7 +243,7 @@ handshake:
 				}).WriteTo(c_w)
 
 				// 鉴权失败，可以给Client多几次机会
-				continue handshake
+				continue handshake_client
 			}
 
 			// 鉴权成功，接下来开始跟 upstream 对接
@@ -248,7 +252,7 @@ handshake:
 				Type: imap.StatusRespOk,
 			}).WriteTo(c_w)
 
-			break handshake
+			break handshake_client
 
 		default:
 			mp.log.Printf("todo cmd %s(%s)", cmd.Tag, cmd.Name)
@@ -261,7 +265,7 @@ handshake:
 
 	}
 
-	// connect upstream
+	// handshake_upstream and pipe
 	err := func() error {
 		// mp.log.Printf("user %s", connUsername)
 		connUpConf := mp.conf.Imap.Users[connUsername].Upstream
@@ -294,8 +298,8 @@ handshake:
 
 		mp.log.Printf("conn(%d) connect upstream: %s (ok)", cid, addr)
 
-		c3_r := imap.NewReader(bufio.NewReader(io.TeeReader(c3, newPrefixWriter("s> ", os.Stderr))))
-		c3_w := imap.NewWriter(bufio.NewWriter(io.MultiWriter(c3, newPrefixWriter("s< ", os.Stderr))))
+		c3_r := imap.NewReader(bufio.NewReader(newReaderWithMayPrefixWriter(c3, "s> ", os.Stderr, doLog)))
+		c3_w := imap.NewWriter(bufio.NewWriter(newWriterWithMayPrefixWriter(c3, "s< ", os.Stderr, doLog)))
 
 		{
 			ret, err := imap.ReadResp(c3_r)
@@ -386,6 +390,11 @@ handshake:
 
 		mp.log.Printf("conn(%d) pipe\n", cid)
 
+		// TODO: use enum
+		if mp.conf.Imap.ConnLog == "handshake" {
+			doLog.Store(false)
+		}
+
 		// PIPE
 		pipe(c_r, c_w, c3_r, c3_w)
 
@@ -413,9 +422,27 @@ func (cc *authConn) WriteResp(res imap.WriterTo) error {
 	return res.WriteTo(cc.w)
 }
 
+func newReaderWithMayPrefixWriter(c io.Reader, ch string, w io.Writer, doLog *atomic.Bool) io.Reader {
+	if doLog == nil {
+		return c
+	}
+	return io.TeeReader(c, newMayPrefixWriter(ch, w, doLog))
+}
+func newWriterWithMayPrefixWriter(c io.Writer, ch string, w io.Writer, doLog *atomic.Bool) io.Writer {
+	if doLog == nil {
+		return c
+	}
+	return io.MultiWriter(c, newMayPrefixWriter(ch, w, doLog))
+}
+
 type prefixWriter struct {
 	w  io.Writer
 	ch []byte
+}
+
+func (w *prefixWriter) Write(p []byte) (n int, err error) {
+	w.w.Write(w.ch)
+	return w.w.Write(p)
 }
 
 func newPrefixWriter(ch string, w io.Writer) io.Writer {
@@ -424,7 +451,30 @@ func newPrefixWriter(ch string, w io.Writer) io.Writer {
 		ch: []byte(ch),
 	}
 }
-func (w *prefixWriter) Write(p []byte) (n int, err error) {
+
+type mayPrefixWriter struct {
+	w  io.Writer
+	ch []byte
+
+	doWrite *atomic.Bool
+}
+
+func (w *mayPrefixWriter) Write(p []byte) (n int, err error) {
+	if !w.doWrite.Load() {
+		return len(p), nil
+	}
+
 	w.w.Write(w.ch)
 	return w.w.Write(p)
+}
+
+func newMayPrefixWriter(ch string, w io.Writer, doWrite *atomic.Bool) io.Writer {
+	if doWrite == nil {
+		panic("newMayPrefixWriter: doLog can not be nil")
+	}
+	return &mayPrefixWriter{
+		w:       w,
+		ch:      []byte(ch),
+		doWrite: doWrite,
+	}
 }
