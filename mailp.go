@@ -274,8 +274,22 @@ handshake:
 		if err != nil {
 			return err
 		}
-		// TODO: tls (c3 is for tls)
-		c3 := c2
+
+		var c3 net.Conn
+		if connUpConf.Tls.Enabled {
+			serverName, _, _ := net.SplitHostPort(addr)
+			tlsConfig := &tls.Config{
+				ServerName:         serverName,
+				InsecureSkipVerify: connUpConf.Tls.SkipVerify,
+			}
+			tlsc := tls.Client(c2, tlsConfig)
+			if err := tlsc.Handshake(); err != nil {
+				return err
+			}
+			c3 = tlsc
+		} else {
+			c3 = c2
+		}
 		defer c3.Close()
 
 		mp.log.Printf("conn(%d) connect upstream: %s (ok)", cid, addr)

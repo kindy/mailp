@@ -16,10 +16,11 @@ imap:
         addr: "127.0.0.1:1233"
         tls:
           enabled: true
+          skipVerify: false
         auth:
-         type: plain
-         username: "?"
-         password: "?"
+          type: plain
+          username: "?"
+          password: "?"
 `
 
 type MailpConf struct {
@@ -57,5 +58,6 @@ type TlsServerConf struct {
 	Key     string
 }
 type TlsClientConf struct {
-	Enabled bool
+	Enabled    bool
+	SkipVerify bool `yaml:"skipVerify"`
 }

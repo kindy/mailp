@@ -26,7 +26,7 @@ func Test_mailp(t *testing.T) {
 
 	var err error
 
-	imapt, err := testStartImapServer(":1233", 20*time.Millisecond)
+	imapt, err := testStartImapServer(":1233", 20*time.Millisecond, nil)
 	if imapt != nil {
 		defer imapt.Close()
 	}
@@ -74,7 +74,7 @@ func Test_mailpTls(t *testing.T) {
 
 	var err error
 
-	imapt, err := testStartImapServer(":1233", 20*time.Millisecond)
+	imapt, err := testStartImapServer(":1233", 20*time.Millisecond, nil)
 	if imapt != nil {
 		defer imapt.Close()
 	}
@@ -118,6 +118,104 @@ imap:
 	A.NoError(err, "read greet")
 	A.False(isPrefix, "read greet")
 	A.Truef(strings.HasPrefix(string(line), "* OK"), "greet begin with * OK, got %s", string(line))
+}
+
+func Test_mailpUpstreamTls(t *testing.T) {
+	A := Assert.New(t)
+
+	var err error
+
+	cert, err := tls.LoadX509KeyPair("mailp-test.cert", "mailp-test.key")
+	A.NoError(err, "load cert")
+	tlsConf := &tls.Config{
+		Certificates: []tls.Certificate{cert},
+	}
+	imapt, err := testStartImapServer(":1233", 20*time.Millisecond, tlsConf)
+	if imapt != nil {
+		defer imapt.Close()
+	}
+	A.NoError(err, "start imap fail")
+
+	mailpAddr := "127.0.0.1:1234"
+
+	t.Run("skipVerify tls", func(t *testing.T) {
+		A := Assert.New(t)
+
+		conf := &MailpConf{}
+		err = conf.Load(`
+imap:
+  addr: ":1234"
+  users:
+    abc:
+      password: 123
+      upstream:
+        addr: 127.0.0.1:1233
+        tls:
+          enabled: true
+          skipVerify: true
+        auth:
+          type: plain
+          username: username
+          password: password
+`)
+		A.NoError(err, "load conf")
+
+		mp, err := testStartMailp(conf, 20*time.Millisecond)
+		if mp != nil {
+			defer mp.Stop()
+		}
+		A.NoError(err, "start mp fail")
+
+		testMailpBasic(t, mailpAddr, true)
+	})
+
+	t.Run("default verify tls", func(t *testing.T) {
+		A := Assert.New(t)
+
+		conf := &MailpConf{}
+		err = conf.Load(`
+imap:
+  addr: ":1234"
+  users:
+    abc:
+      password: 123
+      upstream:
+        addr: 127.0.0.1:1233
+        tls:
+          enabled: true
+        auth:
+          type: plain
+          username: username
+          password: password
+`)
+		A.NoError(err, "load conf")
+
+		mp, err := testStartMailp(conf, 20*time.Millisecond)
+		if mp != nil {
+			defer mp.Stop()
+		}
+		A.NoError(err, "start mp fail")
+
+		c, err := client.Dial(mailpAddr)
+		A.NoError(err, "client.New")
+		defer c.Terminate() // TODO: err?
+
+		caps, err := c.Capability()
+		A.NoError(err, "c.caps()")
+		// caps map[AUTH=PLAIN:true CAPABILITY:true IMAP4rev1:true LITERAL+:true SASL-IR:true]
+		A.Contains(caps, "AUTH=PLAIN")
+		A.Contains(caps, "SASL-IR")
+
+		err = c.Login("abc", "1")
+		A.Error(err, "login bad")
+
+		err = c.Login("abc", "123")
+		A.NoError(err, "login")
+
+		_, err = c.Capability()
+		A.Error(err, "c.caps() real")
+		A.Contains(err.Error(), "imap: connection close", "c.caps() real")
+	})
 }
 
 func testMailpBasic(t *testing.T, addr string, useLogin bool) {
@@ -170,7 +268,7 @@ func testMailpBasic(t *testing.T, addr string, useLogin bool) {
 	A.Contains(mboxNames, "INBOX")
 }
 
-func testStartImapServer(addr string, wait time.Duration) (*server.Server, error) {
+func testStartImapServer(addr string, wait time.Duration, tlsConf *tls.Config) (*server.Server, error) {
 	srv := server.New(imap_mem.New())
 	srv.Addr = addr
 	srv.AllowInsecureAuth = true
@@ -178,10 +276,19 @@ func testStartImapServer(addr string, wait time.Duration) (*server.Server, error
 		newPrefixWriter("t< ", os.Stderr),
 		newPrefixWriter("t> ", os.Stderr),
 	)
+	if tlsConf != nil {
+		srv.TLSConfig = tlsConf
+	}
 
 	startErrCh := make(chan error)
 	go func() {
-		err := srv.ListenAndServe()
+		var err error
+		if tlsConf != nil {
+			err = srv.ListenAndServeTLS()
+		} else {
+			err = srv.ListenAndServe()
+		}
+
 		startErrCh <- err
 	}()
 
