@@ -317,23 +317,39 @@ handshake:
 		}
 
 		// AUTH
-		if connUpConf.Auth.Type != "plain" {
-			return fmt.Errorf("upstream auth support plain, got %s", connUpConf.Auth.Type)
-		}
-
 		username := connUpConf.Auth.Username
 		password := connUpConf.Auth.Password
 		mp.log.Printf("conn(%d) login upstream as %s", cid, username)
 
-		mech, ir, err := sasl.NewPlainClient(username, username, password).Start()
-		if err != nil {
-			return err
+		var cmd *imap.Command
+
+		switch connUpConf.Auth.Type {
+		case "plain":
+			mech, ir, err := sasl.NewPlainClient(username, username, password).Start()
+			if err != nil {
+				return err
+			}
+			cmdr := &commands.Authenticate{
+				Mechanism:       mech,
+				InitialResponse: ir,
+			}
+			cmd = cmdr.Command()
+
+		case "xoauth2":
+			mech, ir, err := NewXoauth2Client(username, password).Start()
+			if err != nil {
+				return err
+			}
+			cmdr := &commands.Authenticate{
+				Mechanism:       mech,
+				InitialResponse: ir,
+			}
+			cmd = cmdr.Command()
+
+		default:
+			return fmt.Errorf("upstream auth support plain, got %s", connUpConf.Auth.Type)
 		}
-		cmdr := &commands.Authenticate{
-			Mechanism:       mech,
-			InitialResponse: ir,
-		}
-		cmd := cmdr.Command()
+
 		cmd.Tag = "mailp.1"
 
 		// TODO: we need imap.Client.Execute()

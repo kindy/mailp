@@ -4,4 +4,4 @@
 - [x] cmd
 - [x] client login (iOS)
 - [x] upstream tls
-- [ ] upstream xoauth2
+- [x] upstream xoauth2

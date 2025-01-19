@@ -69,6 +69,44 @@ imap:
 
 }
 
+func Test_mailp_upstreamAuthXoauth2(t *testing.T) {
+	A := Assert.New(t)
+
+	var err error
+
+	imapt, err := testStartImapServer(":1233", 20*time.Millisecond, nil)
+	if imapt != nil {
+		defer imapt.Close()
+	}
+	A.NoError(err, "start imap fail")
+
+	mailpAddr := "127.0.0.1:1234"
+
+	conf := &MailpConf{}
+	err = conf.Load(`
+imap:
+  addr: ":1234"
+  users:
+    abc:
+      password: 123
+      upstream:
+        addr: 127.0.0.1:1233
+        auth:
+          type: xoauth2
+          username: username
+          password: password
+`)
+	A.NoError(err, "load conf")
+
+	mp, err := testStartMailp(conf, 20*time.Millisecond)
+	if mp != nil {
+		defer mp.Stop()
+	}
+	A.NoError(err, "start mp fail")
+
+	testMailpBasic(t, mailpAddr, true)
+}
+
 func Test_mailpTls(t *testing.T) {
 	A := Assert.New(t)
 
@@ -276,6 +314,23 @@ func testStartImapServer(addr string, wait time.Duration, tlsConf *tls.Config) (
 		newPrefixWriter("t< ", os.Stderr),
 		newPrefixWriter("t> ", os.Stderr),
 	)
+	srv.EnableAuth(Xoauth2, func(conn server.Conn) sasl.Server {
+		return NewXoauth2Server(func(opts Xoauth2Options) *Xoauth2Error {
+			user, err := srv.Backend.Login(conn.Info(), opts.Username, opts.Token)
+			if err != nil {
+				// TODO: err ?
+				return &Xoauth2Error{
+					Status:  "invalid_request",
+					Schemes: "bearer",
+				}
+			}
+
+			ctx := conn.Context()
+			ctx.State = imap.AuthenticatedState
+			ctx.User = user
+			return nil
+		})
+	})
 	if tlsConf != nil {
 		srv.TLSConfig = tlsConf
 	}

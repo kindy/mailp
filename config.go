@@ -18,7 +18,7 @@ imap:
           enabled: true
           skipVerify: false
         auth:
-          type: plain
+          type: plain|xoauth2
           username: "?"
           password: "?"
 `
@@ -48,7 +48,7 @@ type ImapUpstreamConf struct {
 	Auth ImapAuthConf
 }
 type ImapAuthConf struct {
-	Type     string
+	Type     string // plain, xoauth2
 	Username string
 	Password string
 }
