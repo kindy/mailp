@@ -3,11 +3,9 @@ package main
 import (
 	"bufio"
 	"crypto/tls"
-	"fmt"
 	"net"
 	"os"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -23,19 +21,16 @@ import (
 
 var _ = assert.New
 
-var mu sync.Mutex
-
 func Test_mailp(t *testing.T) {
-	mu.Lock()
-	defer mu.Unlock()
-
 	A := Assert.New(t)
 
 	var err error
 
-	// FIXME: stop it
-	go testStartImapServer(":1233")
-	time.Sleep(20 * time.Millisecond)
+	imapt, err := testStartImapServer(":1233", 20*time.Millisecond)
+	if imapt != nil {
+		defer imapt.Close()
+	}
+	A.NoError(err, "start imap fail")
 
 	mailpAddr := "127.0.0.1:1234"
 
@@ -55,11 +50,9 @@ imap:
 `)
 	A.NoError(err, "load conf")
 
-	_, err, clean := testStartMailp(conf, 20*time.Millisecond)
-	if clean != nil {
-		defer func() {
-			A.NoError(clean(), "stop")
-		}()
+	mp, err := testStartMailp(conf, 20*time.Millisecond)
+	if mp != nil {
+		defer mp.Stop()
 	}
 	A.NoError(err, "start mp fail")
 
@@ -70,65 +63,22 @@ imap:
 		}
 
 		t.Run(name, func(t *testing.T) {
-			A := Assert.New(t)
-
-			c, err := client.Dial(mailpAddr)
-			A.NoError(err, "client.New")
-			defer c.Terminate() // TODO: err?
-
-			caps, err := c.Capability()
-			A.NoError(err, "c.caps()")
-			// caps map[AUTH=PLAIN:true CAPABILITY:true IMAP4rev1:true LITERAL+:true SASL-IR:true]
-			A.Contains(caps, "AUTH=PLAIN")
-			A.Contains(caps, "SASL-IR")
-
-			if useLogin {
-				err = c.Login("abc", "1")
-			} else {
-				err = c.Authenticate(sasl.NewPlainClient("abc", "abc", "1"))
-			}
-			A.Error(err, "login bad")
-
-			if useLogin {
-				err = c.Login("abc", "123")
-			} else {
-				err = c.Authenticate(sasl.NewPlainClient("abc", "abc", "123"))
-			}
-			A.NoError(err, "login")
-
-			caps, err = c.Capability()
-			A.NoError(err, "c.caps() real")
-			// TODO: check real caps from test imap server
-			t.Logf("real caps: %+v", caps)
-
-			done := make(chan interface{})
-			ch := make(chan *imap.MailboxInfo)
-			mboxes := make([]*imap.MailboxInfo, 0, 100)
-			mboxNames := make([]string, 0, 100)
-			go func() {
-				for mbox := range ch {
-					mboxes = append(mboxes, mbox)
-					mboxNames = append(mboxNames, mbox.Name)
-				}
-				done <- nil
-			}()
-			err = c.List("", "*", ch)
-			<-done
-			A.NoError(err, "real list")
-
-			A.Contains(mboxNames, "INBOX")
+			testMailpBasic(t, mailpAddr, useLogin)
 		})
 	}
 
 }
 
 func Test_mailpTls(t *testing.T) {
-	mu.Lock()
-	defer mu.Unlock()
-
 	A := Assert.New(t)
 
 	var err error
+
+	imapt, err := testStartImapServer(":1233", 20*time.Millisecond)
+	if imapt != nil {
+		defer imapt.Close()
+	}
+	A.NoError(err, "start imap fail")
 
 	mailpAddr := "127.0.0.1:1234"
 
@@ -145,11 +95,9 @@ imap:
 `)
 	A.NoError(err, "load conf")
 
-	_, err, clean := testStartMailp(conf, 20*time.Millisecond)
-	if clean != nil {
-		defer func() {
-			A.NoError(clean(), "stop")
-		}()
+	mp, err := testStartMailp(conf, 20*time.Millisecond)
+	if mp != nil {
+		defer mp.Stop()
 	}
 	A.NoError(err, "start mp fail")
 
@@ -172,45 +120,96 @@ imap:
 	A.Truef(strings.HasPrefix(string(line), "* OK"), "greet begin with * OK, got %s", string(line))
 }
 
-func testStartImapServer(addr string) error {
-	l, err := net.Listen("tcp", addr)
-	if err != nil {
-		panic(err)
+func testMailpBasic(t *testing.T, addr string, useLogin bool) {
+	A := Assert.New(t)
+
+	c, err := client.Dial(addr)
+	A.NoError(err, "client.New")
+	defer c.Terminate() // TODO: err?
+
+	caps, err := c.Capability()
+	A.NoError(err, "c.caps()")
+	// caps map[AUTH=PLAIN:true CAPABILITY:true IMAP4rev1:true LITERAL+:true SASL-IR:true]
+	A.Contains(caps, "AUTH=PLAIN")
+	A.Contains(caps, "SASL-IR")
+
+	if useLogin {
+		err = c.Login("abc", "1")
+	} else {
+		err = c.Authenticate(sasl.NewPlainClient("abc", "abc", "1"))
 	}
+	A.Error(err, "login bad")
 
-	fmt.Printf("listing on %s\n", l.Addr().String())
+	if useLogin {
+		err = c.Login("abc", "123")
+	} else {
+		err = c.Authenticate(sasl.NewPlainClient("abc", "abc", "123"))
+	}
+	A.NoError(err, "login")
 
+	caps, err = c.Capability()
+	A.NoError(err, "c.caps() real")
+	// TODO: check real caps from test imap server
+	t.Logf("real caps: %+v", caps)
+
+	done := make(chan interface{})
+	ch := make(chan *imap.MailboxInfo)
+	mboxes := make([]*imap.MailboxInfo, 0, 100)
+	mboxNames := make([]string, 0, 100)
+	go func() {
+		for mbox := range ch {
+			mboxes = append(mboxes, mbox)
+			mboxNames = append(mboxNames, mbox.Name)
+		}
+		done <- nil
+	}()
+	err = c.List("", "*", ch)
+	<-done
+	A.NoError(err, "real list")
+
+	A.Contains(mboxNames, "INBOX")
+}
+
+func testStartImapServer(addr string, wait time.Duration) (*server.Server, error) {
 	srv := server.New(imap_mem.New())
-
+	srv.Addr = addr
 	srv.AllowInsecureAuth = true
 	srv.Debug = imap.NewDebugWriter(
 		newPrefixWriter("t< ", os.Stderr),
 		newPrefixWriter("t> ", os.Stderr),
 	)
 
-	return srv.Serve(l)
-}
+	startErrCh := make(chan error)
+	go func() {
+		err := srv.ListenAndServe()
+		startErrCh <- err
+	}()
 
-func testStartMailp(conf *MailpConf, wait time.Duration) (*Mailp, error, func() error) {
-	var mp *Mailp
-	var clean func() error
+	select {
+	case err := <-startErrCh:
+		return srv, err
 
-	{
-		startErrCh := make(chan error)
-		go func() {
-			mp = &Mailp{conf: conf}
-			clean = mp.Stop
-			err := mp.Start()
-			startErrCh <- err
-		}()
-
-		select {
-		case err := <-startErrCh:
-			return mp, err, clean
-
-		case <-time.After(wait):
-		}
+	case <-time.After(wait):
 	}
 
-	return mp, nil, clean
+	return srv, nil
+}
+
+func testStartMailp(conf *MailpConf, wait time.Duration) (*Mailp, error) {
+	mp := &Mailp{conf: conf}
+
+	startErrCh := make(chan error)
+	go func() {
+		err := mp.Start()
+		startErrCh <- err
+	}()
+
+	select {
+	case err := <-startErrCh:
+		return mp, err
+
+	case <-time.After(wait):
+	}
+
+	return mp, nil
 }
